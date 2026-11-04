@@ -31,6 +31,7 @@ import {
   fuseSections,
   fusedMinimalPrompt,
   renderPreview,
+  sessionEnabled,
 } from './rules.js'
 
 /** Cordis plugin name used by Loader diagnostics. */
@@ -44,8 +45,9 @@ export const inject = ['settings', 'systemPrompt', 'loader']
 
 const RPC_CHANNEL = '/dsh-unrestricted'
 export const Config = z.object({
-  enabled: z.boolean().default(false),
-}).default({ enabled: false }).volatile()
+  /** Armed sessions: SessionId -> true. Absent means the stock prompt is used. */
+  sessions: z.dict(z.boolean()).default({}),
+}).default({ sessions: {} }).volatile()
 
 /** Human-readable error text for diagnostics and RPC error branches. */
 function messageOf(error) {
@@ -65,7 +67,6 @@ export function apply(ctx, config) {
   ctx.effect(() => ctx.settings.configure({ auto: false }, ctx.fiber))
 
   const state = {
-    enabled: config.get().enabled,
     /** presetId -> issue codes observed on live assemblies. */
     runtime: new Map(),
     /** Agent -> section disposer for minimal persona shadows. */
@@ -118,8 +119,22 @@ export function apply(ctx, config) {
   }
 
   /**
+   * Read the live session header and resolve whether this agent's session is
+   * armed. Subagents inherit their parent's flag through `sessionEnabled`.
+   */
+  function enabledFor(agent) {
+    const header = agent?.session?.header
+    if (header === undefined || header === null) return false
+    return sessionEnabled(config.get().sessions, {
+      id: header.id,
+      origin: header.origin,
+      parent: header.parentSession,
+    })
+  }
+
+  /**
    * Remove a minimal persona shadow from an agent when it switches preset, is
-   * disposed, or unrestricted mode turns off.
+   * disposed, or unrestricted mode turns off for its session.
    */
   function unshadowMinimal(agent) {
     const dispose = state.shadows.get(agent)
@@ -155,7 +170,7 @@ export function apply(ctx, config) {
    * shadow from an earlier blank-session preset selection is disposed.
    */
   function syncMinimalShadow(agent) {
-    if (!state.enabled) {
+    if (!enabledFor(agent)) {
       unshadowMinimal(agent)
       return
     }
@@ -202,34 +217,32 @@ export function apply(ctx, config) {
     state.shadows.clear()
   }
 
-  function onEnable() {
-    state.runtime.clear()
+  /**
+   * Re-sync every live agent after a per-session flag change: an armed minimal
+   * agent gains its persona shadow, a disarmed one loses it. Runs once at
+   * startup and again whenever the `sessions` map changes.
+   */
+  function syncAllAgents() {
     sweepAgents()
-    void ctx.loader.await().then(() => {
-      if (state.enabled) sweepAgents()
-    })
+    void ctx.loader.await().then(() => sweepAgents())
   }
 
-  function onDisable() {
-    clearShadows()
-    state.runtime.clear()
-    state.fusedText.clear()
-  }
-
-  /** Current card view: toggle, version, and per-preset state. */
+  /** Current card view: armed sessions, version, and per-preset state. */
   function statusPayload() {
+    const sessions = config.get().sessions ?? {}
+    const armed = Object.keys(sessions).filter(sessionId => sessions[sessionId] === true)
     const modes = {}
     for (const presetId of PRESETS) {
       const issues = state.runtime.get(presetId) ?? []
       modes[presetId] = {
-        state: !state.enabled
+        state: armed.length === 0
           ? 'off'
           : issues.length > 0 ? 'failed' : 'active',
         issues,
       }
     }
     return {
-      enabled: state.enabled,
+      sessions: armed,
       version: PLUGIN_VERSION,
       modes,
     }
@@ -321,7 +334,7 @@ export function apply(ctx, config) {
       case 'recheck': {
         state.runtime.clear()
         state.fusedText.clear()
-        if (state.enabled) sweepAgents()
+        sweepAgents()
         return ok(statusPayload())
       }
       default:
@@ -338,9 +351,12 @@ export function apply(ctx, config) {
 
   ctx.on('system-prompt/assemble', async (assembly, context, next) => {
     const original = await next()
-    if (!state.enabled) return original
     const agent = context.agent
     if (agent === undefined) return original
+    if (!enabledFor(agent)) {
+      unshadowMinimal(agent)
+      return original
+    }
     const presetId = resolveAgentPreset(agent, original.sections)
     if (presetId === undefined || !PRESET_RULES[presetId]) {
       unshadowMinimal(agent)
@@ -384,7 +400,7 @@ export function apply(ctx, config) {
   })
 
   ctx.on('agent/created', ({ agent }) => {
-    if (!state.enabled) return
+    if (!enabledFor(agent)) return
     syncMinimalShadow(agent)
   })
 
@@ -392,7 +408,7 @@ export function apply(ctx, config) {
     const agent = ctx.get('agents')?.get?.(sessionId)
     if (agent === undefined) return
     state.customMinimal.delete(agent)
-    if (!state.enabled) {
+    if (!enabledFor(agent)) {
       unshadowMinimal(agent)
       return
     }
@@ -404,21 +420,20 @@ export function apply(ctx, config) {
     unshadowMinimal(agent)
   })
 
+  // 每次 `sessions` 变化后重同步：新开启的会话（尤其 minimal 预设）立刻
+  // 拿到人格段遮蔽，关掉的会话立刻失去它。会话级开关不写会话记录，也不
+  // 触碰正在执行的请求。
   ctx.effect(() => {
     const unwatch = ctx.on('loader/volatile-update', () => {
-      const enabled = config.get().enabled
-      if (enabled === state.enabled) return
-      state.enabled = enabled
-      if (enabled) onEnable()
-      else onDisable()
+      state.runtime.clear()
+      syncAllAgents()
     })
-    if (state.enabled) onEnable()
+    syncAllAgents()
     return () => {
-      state.enabled = false
       unwatch()
       clearShadows()
     }
-  }, 'dsh-unrestricted: toggle lifecycle')
+  }, 'dsh-unrestricted: per-session toggle lifecycle')
 
   // Web/Desktop 状态通道由官方 Connection 认证；headless 组合无需提供 connection 服务。
   ctx.inject(['connection'], (connectionCtx) => {

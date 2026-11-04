@@ -1,6 +1,10 @@
 /**
- * Browser-half controller for the unrestricted card: binds the `unrestricted`
- * settings namespace (the toggle) and reads per-preset state and previews.
+ * Browser-half controller: binds the `unrestricted` settings namespace, keeps
+ * the per-session switch in sync with it, and reads per-preset state/previews.
+ *
+ * The armed flags live in the plugin config as `sessions: SessionId -> boolean`
+ * so the host resolves them at assembly time; this half only mirrors the map
+ * and writes single-session deltas into it.
  */
 import type { Context } from '@deepseek-ai/cordis'
 import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client'
@@ -8,10 +12,12 @@ import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client
 import type {} from '@deepseek-ai/dsh-api-remotes/client'
 // Type-only: the ctx.configForms Context merge.
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
+import { createStore, type Store } from './store.ts'
 
-/** The toggle section stored in the `unrestricted` settings namespace. */
+/** The settings section stored in the `unrestricted` namespace. */
 export interface UnrestrictedSettings {
-  enabled?: boolean
+  /** Armed sessions; absent or `false` means the stock prompt is assembled. */
+  sessions?: Record<string, boolean>
 }
 
 /** Per-preset fusion state reported by the host half. */
@@ -22,13 +28,14 @@ export interface UnrestrictedModeState {
 
 /** Host status endpoint payload. */
 export interface UnrestrictedStatus {
-  enabled: boolean
+  /** Session ids currently armed. */
+  sessions: string[]
   /** Current plugin version reported by the host half. */
   version?: string
   modes: Record<string, UnrestrictedModeState>
 }
 
-/** Deploy preview for one preset: what switching on would actually assemble. */
+/** Deploy preview for one preset: what an armed session would actually receive. */
 export interface UnrestrictedPreview {
   presetId: string
   available: boolean
@@ -54,8 +61,8 @@ export interface UnrestrictedPreviewEntry {
 
 /** Full view snapshot the card subscribes to. */
 export interface UnrestrictedViewSnapshot {
-  /** Persisted toggle; false until the settings scope first syncs. */
-  enabled: boolean
+  /** Armed flags mirrored from settings; empty until the scope first syncs. */
+  sessions: Record<string, boolean>
   /** Whether the Host document accepts writes. */
   writable: boolean
   /** Settings scope sync state. */
@@ -70,6 +77,13 @@ export interface UnrestrictedViewSnapshot {
   message?: string
 }
 
+/** One session's composer switch state. */
+export interface ComposerToggleState {
+  enabled: boolean
+  writable: boolean
+  loading: boolean
+}
+
 /** Minimal RPC wire shape (structural copy of the host RpcResult). */
 type RpcResult<T> = { ok: true; value: T } | { ok: false; error: { code: string; message: string } }
 
@@ -79,20 +93,32 @@ export interface UnrestrictedViewSource {
   subscribe(listener: () => void): () => void
 }
 
-/** Inject face handed to the card at registration. */
+/** Inject face handed to the settings card at registration. */
 export interface UnrestrictedCardInjected {
   hooks: {
     /** Reactive card view. */
     view: UnrestrictedViewSource
   }
-  /** Persist the toggle. */
-  setEnabled: (enabled: boolean) => Promise<void>
+  /** Arm or disarm one session, persisting the whole map. */
+  setSessionEnabled: (sessionId: string, enabled: boolean) => Promise<void>
   /** Re-validate runtime state and refresh. */
   recheck: () => Promise<void>
   /** Re-read host status and invalidate cached previews. */
   refresh: () => Promise<void>
   /** Fetch the exact fused prompt this preset would deploy. */
   loadPreview: (presetId: string) => Promise<void>
+}
+
+/** Inject face handed to one composer occurrence. */
+export interface ComposerInjected {
+  hooks: {
+    /** That session's switch state. */
+    unrestrictedSession: Store<ComposerToggleState>
+  }
+  /** Session this occurrence renders for. */
+  sessionId: string
+  /** Arm or disarm this session. */
+  setEnabled: (enabled: boolean) => void
 }
 
 const RPC_CHANNEL = '/dsh-unrestricted'
@@ -103,17 +129,24 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+/** Whether two armed maps carry the same session flags. */
+function sameSessions(a: Record<string, boolean>, b: Record<string, boolean>): boolean {
+  const keys = Object.keys(a)
+  if (keys.length !== Object.keys(b).length) return false
+  return keys.every(key => a[key] === b[key])
+}
+
 /**
- * Create the card controller bound to the calling plugin's context.
+ * Create the controller bound to the calling plugin's context.
  * @param ctx - the browser plugin context (connection + remote + configForms injected).
- * @returns the controller whose face() feeds the slot inject share.
+ * @returns the card face factory and the per-session composer factory.
  */
 export function createUnrestrictedController(ctx: Context) {
   const connection = ctx.get('connection') as ConnectionHandle
   const settings = ctx.configForms.get<UnrestrictedSettings>(SETTINGS_NS)
 
   let snapshot: UnrestrictedViewSnapshot = {
-    enabled: false,
+    sessions: {},
     writable: false,
     settingsStatus: 'loading',
     status: null,
@@ -122,6 +155,7 @@ export function createUnrestrictedController(ctx: Context) {
   }
   const listeners = new Set<() => void>()
   const previewRequests = new Map<string, symbol>()
+  const composerStores = new Map<string, Store<ComposerToggleState>>()
   let statusGeneration = 0
   let pendingOperations = 0
 
@@ -133,12 +167,30 @@ export function createUnrestrictedController(ctx: Context) {
     },
   }
 
+  /** Mirror every composer switch from the same settings snapshot. */
+  function publishComposers(armed: Record<string, boolean>, writable: boolean, loading: boolean): void {
+    for (const [sessionId, store] of composerStores) {
+      const next: ComposerToggleState = {
+        enabled: armed[sessionId] === true,
+        writable,
+        loading,
+      }
+      const previous = store.getSnapshot()
+      if (previous.enabled !== next.enabled || previous.writable !== next.writable || previous.loading !== next.loading) {
+        store.set(next)
+      }
+    }
+  }
+
   function publish(): void {
     const settingsSnapshot = settings.getSnapshot()
-    const enabled = settingsSnapshot.value?.enabled === true
-    if (enabled !== snapshot.enabled) invalidatePreviews()
+    const armed: Record<string, boolean> = {}
+    for (const [sessionId, value] of Object.entries(settingsSnapshot.value?.sessions ?? {})) {
+      if (value === true) armed[sessionId] = true
+    }
+    if (!sameSessions(armed, snapshot.sessions)) invalidatePreviews()
     snapshot = {
-      enabled,
+      sessions: armed,
       writable: settingsSnapshot.writable,
       settingsStatus: settingsSnapshot.status,
       status: snapshot.status,
@@ -147,6 +199,7 @@ export function createUnrestrictedController(ctx: Context) {
       message: snapshot.message,
     }
     for (const listener of listeners) listener()
+    publishComposers(armed, settingsSnapshot.writable, settingsSnapshot.status !== 'ready')
   }
 
   function invalidatePreviews(): void {
@@ -194,10 +247,21 @@ export function createUnrestrictedController(ctx: Context) {
     return readStatus('status', clearPreviews)
   }
 
-  function setEnabled(enabled: boolean): Promise<void> {
+  /**
+   * Write one session's flag. The settings service takes whole fields, so the
+   * current map is merged into a fresh object; disarming deletes the key
+   * instead of storing `false`, keeping the persisted map as the armed set.
+   */
+  function setSessionEnabled(sessionId: string, enabled: boolean): Promise<void> {
     return whileBusy(async () => {
       try {
-        await settings.set('enabled', enabled)
+        const next: Record<string, boolean> = {}
+        for (const [id, value] of Object.entries(settings.getSnapshot().value?.sessions ?? {})) {
+          if (value === true) next[id] = true
+        }
+        if (enabled) next[sessionId] = true
+        else delete next[sessionId]
+        await settings.set('sessions', next)
         await refresh(true)
       } catch (error) {
         snapshot = { ...snapshot, message: messageOf(error) }
@@ -245,6 +309,21 @@ export function createUnrestrictedController(ctx: Context) {
     publish()
   }
 
+  /** The store one composer occurrence renders from, created on first ask. */
+  function composerStore(sessionId: string): Store<ComposerToggleState> {
+    let store = composerStores.get(sessionId)
+    if (store === undefined) {
+      const settingsSnapshot = settings.getSnapshot()
+      store = createStore<ComposerToggleState>({
+        enabled: settingsSnapshot.value?.sessions?.[sessionId] === true,
+        writable: settingsSnapshot.writable,
+        loading: settingsSnapshot.status !== 'ready',
+      })
+      composerStores.set(sessionId, store)
+    }
+    return store
+  }
+
   ctx.effect(
     () => settings.subscribe(publish),
     'dsh-unrestricted: settings mirror',
@@ -261,10 +340,15 @@ export function createUnrestrictedController(ctx: Context) {
   return {
     face: (): UnrestrictedCardInjected => ({
       hooks: { view },
-      setEnabled,
+      setSessionEnabled,
       recheck,
       refresh: () => refresh(true),
       loadPreview,
+    }),
+    composer: (sessionId: string): ComposerInjected => ({
+      hooks: { unrestrictedSession: composerStore(sessionId) },
+      sessionId,
+      setEnabled: (enabled: boolean) => { void setSessionEnabled(sessionId, enabled) },
     }),
   }
 }

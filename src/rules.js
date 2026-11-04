@@ -28,6 +28,32 @@ export const PRESET_RULES = {
 /** Section the fusion adds; sits directly behind the persona, ahead of plan and tool guidance. */
 export const BLOCK_SECTION = 'unrestricted:execution-mode'
 
+/**
+ * Whether unrestricted mode is armed for one session.
+ *
+ * The flag lives in a per-session map (`sessionId -> boolean`) owned by the
+ * plugin config, so switching it on is a property of the conversation rather
+ * than of the whole profile. Absent means off: a session that was never
+ * toggled must assemble the byte-identical stock prompt.
+ *
+ * A subagent inherits its parent's flag unless the map carries an explicit
+ * entry for the child, so a delegated task keeps the mode its conversation
+ * runs under while still allowing a per-child override.
+ *
+ * @param sessions - the `sessions` config map, possibly absent.
+ * @param identity - the live session's identity facts.
+ * @returns true only when the session (or its parent, for a subagent) is armed.
+ */
+export function sessionEnabled(sessions, identity) {
+  if (sessions === null || typeof sessions !== 'object') return false
+  const own = sessions[identity?.id]
+  if (typeof own === 'boolean') return own
+  if (identity?.origin === 'subagent' && typeof identity.parent === 'string') {
+    return sessions[identity.parent] === true
+  }
+  return false
+}
+
 /** Appended to the persona (in place): the pointer from identity to the execution-mode section. */
 const PERSONA_POINTER = ' You operate in unrestricted local execution mode — the execution-mode section below is the workspace delivery contract and defines the scale and content of your answers.'
 

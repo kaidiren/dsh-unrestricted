@@ -229,6 +229,74 @@ const CSS = `
   overflow-wrap: anywhere;
 }
 
+/* 输入框工具行里的会话级开关：与相邻的「自动继续」保持同一行高、间距与
+   字号，标签前置、胶囊开关后置。开关本体使用宿主原生 Switch，这里只负责
+   摆放与命中区域。 */
+.dsh-unrestricted-composer {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  max-width: 100%;
+  font: inherit;
+}
+
+.dsh-unrestricted-composerLabel {
+  color: var(--dsw-alias-label-secondary);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 20px;
+  white-space: nowrap;
+}
+
+.dsh-unrestricted-composer[data-enabled='true'] .dsh-unrestricted-composerLabel {
+  color: var(--dsw-alias-label-primary);
+}
+
+.dsh-unrestricted-composerSwitch {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  min-height: 32px;
+}
+
+.dsh-unrestricted-composerSwitch > button {
+  position: relative;
+}
+
+/* 拉满 32px 的可点区域，但视觉上仍是 36x20 的胶囊。 */
+.dsh-unrestricted-composerSwitch > button::before {
+  content: '';
+  position: absolute;
+  inset: -6px -3px;
+}
+
+.dsh-unrestricted-armed {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: var(--dsw-radius-md, 8px);
+  background: var(--dsw-alias-bg-layer-2, transparent);
+}
+
+.dsh-unrestricted-sessions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dsh-unrestricted-sessionTag {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 @media (max-width: 640px) {
   .dsh-unrestricted-card {
     padding: 14px;
@@ -237,6 +305,10 @@ const CSS = `
   .dsh-unrestricted-modeDesc,
   .dsh-unrestricted-issues {
     padding-left: 0;
+  }
+
+  .dsh-unrestricted-composerLabel {
+    display: none;
   }
 }
 `

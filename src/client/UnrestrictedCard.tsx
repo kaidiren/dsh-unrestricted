@@ -1,13 +1,12 @@
 /**
  * The unrestricted settings view:
- * - Master toggle card with native Switch, status Tag, and scope boundary notes
+ * - Status card: armed sessions, per-session switch pointer, scope boundary notes
  * - Per-preset coverage list with StateDot, Tag, preview drawer, and one-click copy
  */
 import { useEffect, useState } from 'react'
 import {
   Button,
   StateDot,
-  Switch,
   Tag,
   fileSizeText,
   writeClipboard,
@@ -118,6 +117,7 @@ export function UnrestrictedCard(props: UnrestrictedCardProps) {
     }
   }, [openPreview, openEntry, loadPreview])
 
+  const armed = Object.keys(view.sessions)
   const hasFailedMode = status !== null
     && Object.values(status.modes).some(mode => mode.state === 'failed')
   const summaryKey: UnrestrictedLocaleKey = view.settingsStatus === 'loading'
@@ -126,12 +126,12 @@ export function UnrestrictedCard(props: UnrestrictedCardProps) {
       ? 'summaryUnavailable'
       : hasFailedMode
         ? 'summaryValidationFailed'
-        : view.enabled ? 'summaryEnabled' : 'summaryDisabled'
+        : armed.length > 0 ? 'summaryEnabled' : 'summaryDisabled'
   const summaryTone: TagTone = view.settingsStatus !== 'ready'
     ? 'neutral'
     : hasFailedMode
       ? 'warning'
-      : view.enabled ? 'success' : 'neutral'
+      : armed.length > 0 ? 'success' : 'neutral'
 
   /** Toggle one preset's preview, fetching the current bytes on first open. */
   function togglePreview(presetId: string): void {
@@ -174,17 +174,25 @@ export function UnrestrictedCard(props: UnrestrictedCardProps) {
             <h3 id="dsh-unrestricted-main-title" className="dsh-unrestricted-title">{t('title')}</h3>
             <Tag tone={summaryTone}>{t(summaryKey)}</Tag>
           </div>
-          <div className="dsh-unrestricted-headerControls">
-            <span className="dsh-unrestricted-switchLabel">{t('toggle')}</span>
-            <Switch
-              checked={view.enabled}
-              disabled={!view.writable || view.settingsStatus !== 'ready' || view.busy}
-              label={t('toggle')}
-              onChange={(checked) => { void props.setEnabled(checked) }}
-            />
-          </div>
         </div>
         <p className="dsh-unrestricted-description">{t('description')}</p>
+        <p className="dsh-unrestricted-note">{t('composerHint')}</p>
+        <div className="dsh-unrestricted-armed">
+          <span className="dsh-unrestricted-note">{t('armedTitle')}</span>
+          {armed.length === 0 ? (
+            <p className="dsh-unrestricted-note">{t('armedEmpty')}</p>
+          ) : (
+            <ul className="dsh-unrestricted-sessions">
+              {armed.map(sessionId => (
+                <li key={sessionId}>
+                  <Tag tone="success">
+                    <span className="dsh-unrestricted-sessionTag dsh-unrestricted-mono">{sessionId}</span>
+                  </Tag>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
         <p className="dsh-unrestricted-note">{t('scopeNote')}</p>
         {view.settingsStatus === 'loading' && (
           <p className="dsh-unrestricted-note" role="status">{t('settingsLoading')}</p>
