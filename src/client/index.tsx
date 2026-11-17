@@ -32,7 +32,7 @@ export const inject = ['slots', 'locale', 'connection', 'remote', 'configForms']
 
 /** 注册配置卡片与输入框内的会话级开关。 */
 export function apply(ctx: Context): void {
-  ensureStyles()
+  ctx.effect(() => ensureStyles(), 'dsh-unrestricted: stylesheet')
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-unrestricted: dictionaries')
   const controller = createUnrestrictedController(ctx)
   ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register({
