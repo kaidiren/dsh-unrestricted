@@ -18,6 +18,8 @@ import { createStore, type Store } from './store.ts'
 export interface UnrestrictedSettings {
   /** Armed sessions; absent or `false` means the stock prompt is assembled. */
   sessions?: Record<string, boolean>
+  /** Whether host branding is stripped from assembled prompts (global). */
+  stripHostIdentity?: boolean
 }
 
 /** Per-preset fusion state reported by the host half. */
@@ -30,6 +32,8 @@ export interface UnrestrictedModeState {
 export interface UnrestrictedStatus {
   /** Session ids currently armed. */
   sessions: string[]
+  /** Whether the host half is stripping host branding. */
+  stripHostIdentity?: boolean
   /** Current plugin version reported by the host half. */
   version?: string
   modes: Record<string, UnrestrictedModeState>
@@ -63,6 +67,8 @@ export interface UnrestrictedPreviewEntry {
 export interface UnrestrictedViewSnapshot {
   /** Armed flags mirrored from settings; empty until the scope first syncs. */
   sessions: Record<string, boolean>
+  /** Persisted host-brand stripping toggle; false until synced. */
+  stripHostIdentity: boolean
   /** Whether the Host document accepts writes. */
   writable: boolean
   /** Settings scope sync state. */
@@ -101,6 +107,8 @@ export interface UnrestrictedCardInjected {
   }
   /** Arm or disarm one session, persisting the whole map. */
   setSessionEnabled: (sessionId: string, enabled: boolean) => Promise<void>
+  /** Persist whether host identity branding is stripped from prompts. */
+  setStripHostIdentity: (strip: boolean) => Promise<void>
   /** Re-validate runtime state and refresh. */
   recheck: () => Promise<void>
   /** Re-read host status and invalidate cached previews. */
@@ -121,7 +129,8 @@ export interface ComposerInjected {
   setEnabled: (enabled: boolean) => void
 }
 
-const RPC_CHANNEL = '/dsh-unrestricted'
+const RPC_CHANNEL = '/api'
+const RPC_NAMESPACE = 'dsh-unrestricted'
 const SETTINGS_NS = 'unrestricted'
 
 /** Human-readable error text for the banner. */
@@ -147,6 +156,7 @@ export function createUnrestrictedController(ctx: Context) {
 
   let snapshot: UnrestrictedViewSnapshot = {
     sessions: {},
+    stripHostIdentity: false,
     writable: false,
     settingsStatus: 'loading',
     status: null,
@@ -188,9 +198,13 @@ export function createUnrestrictedController(ctx: Context) {
     for (const [sessionId, value] of Object.entries(settingsSnapshot.value?.sessions ?? {})) {
       if (value === true) armed[sessionId] = true
     }
-    if (!sameSessions(armed, snapshot.sessions)) invalidatePreviews()
+    const stripHostIdentity = settingsSnapshot.value?.stripHostIdentity === true
+    if (!sameSessions(armed, snapshot.sessions) || stripHostIdentity !== snapshot.stripHostIdentity) {
+      invalidatePreviews()
+    }
     snapshot = {
       sessions: armed,
+      stripHostIdentity,
       writable: settingsSnapshot.writable,
       settingsStatus: settingsSnapshot.status,
       status: snapshot.status,
@@ -208,7 +222,11 @@ export function createUnrestrictedController(ctx: Context) {
   }
 
   async function call<T>(endpoint: string, payload: unknown): Promise<T> {
-    const result = await connection.rpc.call(RPC_CHANNEL, endpoint, payload) as RpcResult<T>
+    const result = await connection.rpc.call(
+      RPC_CHANNEL,
+      `${RPC_NAMESPACE}/${endpoint}`,
+      payload,
+    ) as RpcResult<T>
     if (!result.ok) throw new Error(result.error.message)
     return result.value
   }
@@ -247,6 +265,21 @@ export function createUnrestrictedController(ctx: Context) {
     return readStatus('status', clearPreviews)
   }
 
+  /** Write one whole settings field and refresh the card afterwards. */
+  function updateSetting<K extends keyof UnrestrictedSettings>(
+    field: K,
+    value: NonNullable<UnrestrictedSettings[K]>,
+  ): Promise<void> {
+    return whileBusy(async () => {
+      try {
+        await settings.set(field, value)
+        await refresh(true)
+      } catch (error) {
+        snapshot = { ...snapshot, message: messageOf(error) }
+      }
+    })
+  }
+
   /**
    * Write one session's flag. The settings service takes whole fields, so the
    * current map is merged into a fresh object; disarming deletes the key
@@ -267,6 +300,10 @@ export function createUnrestrictedController(ctx: Context) {
         snapshot = { ...snapshot, message: messageOf(error) }
       }
     })
+  }
+
+  function setStripHostIdentity(strip: boolean): Promise<void> {
+    return updateSetting('stripHostIdentity', strip)
   }
 
   function recheck(): Promise<void> {
@@ -341,6 +378,7 @@ export function createUnrestrictedController(ctx: Context) {
     face: (): UnrestrictedCardInjected => ({
       hooks: { view },
       setSessionEnabled,
+      setStripHostIdentity,
       recheck,
       refresh: () => refresh(true),
       loadPreview,

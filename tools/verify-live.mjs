@@ -70,7 +70,7 @@ const overrides = [
   { id: 'web-runtime', disabled: true },
   { id: 'session-telemetry-otel', disabled: true },
   { id: 'modules', disabled: true },
-  { id: 'connection', inject: ['webServer'], config: { trustedHosts: [] } },
+  { id: 'connection', config: { trustedHosts: [] } },
   { id: 'open-in-app', disabled: true },
   { id: 'session-log-download', disabled: true },
   { id: 'client-hmr', disabled: true },
@@ -152,8 +152,12 @@ async function assemblePrompt(agent) {
   }
 }
 
+async function updateSettings(patch) {
+  await ctx.settings.update('unrestricted', patch)
+}
+
 async function setEnabled(enabled) {
-  await ctx.settings.update('unrestricted', { enabled })
+  await updateSettings({ enabled })
 }
 
 /** 用原生子代理组合和作用域工具注册复现 Minimal 的角色及报告协议。 */
@@ -281,6 +285,41 @@ try {
   check('pre-existing standard session fused on next assembly', pre.text.includes(rules.EXECUTION_MODE_BLOCK))
   check('pre-existing session tools unchanged', pre.tools === baseline.standard.tools)
 
+  // Shared /api Fetch RPC routes: must register and respond without webServer in connection.inject.
+  const shared = ctx.connection.createSharedFetchHandler('/api')
+  const ownerPeer = { principal: { kind: 'owner' } }
+  async function callSharedRpc(endpoint, payload = {}) {
+    const rpcId = `verify-${endpoint}`
+    const response = await shared.fetch(new Request(`http://dsh.internal/api/dsh-unrestricted/${endpoint}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        type: 'client-request',
+        rpcId,
+        method: `dsh-unrestricted/${endpoint}`,
+        payload,
+      }),
+    }), ownerPeer)
+    return { status: response.status, body: await response.json() }
+  }
+  const rpcStatus = await callSharedRpc('status')
+  check('shared /api status RPC returns 200 ok with current version',
+    rpcStatus.status === 200
+    && rpcStatus.body?.result?.ok === true
+    && rpcStatus.body.result.value?.version === '0.2.14'
+    && rpcStatus.body.result.value?.enabled === true)
+  const rpcPreview = await callSharedRpc('preview', { presetId: 'standard' })
+  check('shared /api preview RPC returns 200 ok with fused prompt',
+    rpcPreview.status === 200
+    && rpcPreview.body?.result?.ok === true
+    && rpcPreview.body.result.value?.available === true
+    && rpcPreview.body.result.value?.text?.includes(rules.EXECUTION_MODE_BLOCK))
+  const rpcRecheck = await callSharedRpc('recheck')
+  check('shared /api recheck RPC returns 200 ok',
+    rpcRecheck.status === 200
+    && rpcRecheck.body?.result?.ok === true
+    && rpcRecheck.body.result.value?.enabled === true)
+
   // Plan mode flips exactly one section.
   const planAgent = await presetAgent('standard', '-plan')
   planAgent.session.append('plan/mode', { active: true })
@@ -399,8 +438,40 @@ try {
     check(`${id} preview carries the contract`, text.includes(rules.EXECUTION_MODE_BLOCK))
   }
 
+  console.log('strip host identity')
+  for (const combo of [
+    { enabled: true, stripHostIdentity: true },
+    { enabled: false, stripHostIdentity: true },
+  ]) {
+    await updateSettings(combo)
+    for (const id of ['standard', 'ptc', 'cordis', 'minimal']) {
+      const agent = await presetAgent(id)
+      const assembled = await ctx.systemPrompt.assemble({ agent, scope: agent })
+      const refreshed = ctx.systemPrompt.refreshContext(assembled, { agent, scope: agent })
+      const prompt = {
+        text: renderPrompt(refreshed),
+        contexts: JSON.stringify(refreshed.contexts),
+      }
+      check(`stripHostIdentity (enabled=${combo.enabled}) removes DeepSeek Harness from ${id} text`,
+        !/DeepSeek Harness/i.test(prompt.text) && !/\bDSH\b/.test(prompt.text))
+      check(`stripHostIdentity (enabled=${combo.enabled}) removes dev & DSH brand contexts from ${id} even after refreshContext`,
+        !prompt.contexts.includes('harness:source')
+        && !prompt.contexts.includes('app:web-surface')
+        && !/DeepSeek Harness/i.test(prompt.contexts)
+        && !/Current DSH file policy/.test(prompt.contexts))
+    }
+    for (const id of ['standard', 'cordis']) {
+      const rpcStrippedPreview = await callSharedRpc('preview', { presetId: id })
+      check(`stripHostIdentity (enabled=${combo.enabled}) strips DeepSeek Harness from ${id} preview RPC`,
+        rpcStrippedPreview.status === 200
+        && rpcStrippedPreview.body?.result?.ok === true
+        && rpcStrippedPreview.body.result.value?.available === true
+        && !/DeepSeek Harness/i.test(rpcStrippedPreview.body.result.value.text))
+    }
+  }
+
   console.log('toggle off')
-  await setEnabled(false)
+  await updateSettings({ enabled: false, stripHostIdentity: false })
   for (const id of ['standard', 'ptc', 'cordis', 'minimal']) {
     const off = await until(`${id} restore`, async () => {
       const prompt = await assemblePrompt(await presetAgent(id))

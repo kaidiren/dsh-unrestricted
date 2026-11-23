@@ -92,19 +92,12 @@ DSH のセクション名（`deployment:persona-prefix`、`plan:policy`、`tools
 
 ## インストールと更新
 
-Desktop `0.2.1-rc.5` または公式タグ `dsh-v0.2.2-rc.3` を使う場合は、対象プロファイルの `cordis.patch.yml` にある `connection` 行の既存設定を保持し、次の依存関係を追加してください。
-
-```yaml
-- id: connection
-  inject: [webStartup, webServer]
-```
-
 ```sh
 # DSH Web へのインストール
-dsh plugin --profile web add github:yexi-by/dsh-unrestricted#v0.2.10
+dsh plugin --profile web add github:yexi-by/dsh-unrestricted#v0.2.14
 
 # DSH Desktop へのインストール
-dsh plugin --profile desktop add github:yexi-by/dsh-unrestricted#v0.2.10
+dsh plugin --profile desktop add github:yexi-by/dsh-unrestricted#v0.2.14
 ```
 
 インストール後に `dsh web` または DSH Desktop を再起動し、下記の[使い方](#使い方)に従って有効化します。
@@ -115,7 +108,7 @@ dsh plugin --profile desktop add github:yexi-by/dsh-unrestricted#v0.2.10
 
 ```sh
 dsh plugin --profile web remove dsh-unrestricted
-dsh plugin --profile web add github:yexi-by/dsh-unrestricted#v0.2.10
+dsh plugin --profile web add github:yexi-by/dsh-unrestricted#v0.2.14
 ```
 
 更新後に `dsh web` または DSH Desktop を再起動します。
@@ -145,6 +138,7 @@ dsh plugin --profile web add file:D:/work/dsh/plugin/unrestricted
 
 設定カードでは以下の項目も確認できます：
 
+- **ホストブランド識別子の非表示**：破限スイッチとは独立して動作し、システムプロンプトおよび実行時コンテキストから `DeepSeek Harness` / `DSH` の識別セクションや Web GUI 開発パスを除去して、サードパーティ経路（Google Antigravity リバースプロキシや Google AI Studio PG チャネルなど）でクライアント指紋検知により `429` が返されるのを防ぎます。
 - **モード状態とプロンプトプレビュー**：Standard、PTC、Cordis、Minimal の 4 モードの状態表示、完全なシステムプロンプトの展開プレビューおよびワンクリックコピー。
 
 ---

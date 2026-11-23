@@ -92,19 +92,12 @@ The toggle state is saved in the profile's `cordis.patch.yml` and takes effect o
 
 ## Installation & Updates
 
-For Desktop `0.2.1-rc.5` or the official `dsh-v0.2.2-rc.3` tag, add these dependencies to the `connection` entry in the profile’s `cordis.patch.yml`, preserving any existing configuration.
-
-```yaml
-- id: connection
-  inject: [webStartup, webServer]
-```
-
 ```sh
 # Install on DSH Web
-dsh plugin --profile web add github:yexi-by/dsh-unrestricted#v0.2.10
+dsh plugin --profile web add github:yexi-by/dsh-unrestricted#v0.2.14
 
 # Install on DSH Desktop
-dsh plugin --profile desktop add github:yexi-by/dsh-unrestricted#v0.2.10
+dsh plugin --profile desktop add github:yexi-by/dsh-unrestricted#v0.2.14
 ```
 
 Restart `dsh web` or DSH Desktop after installing, then follow [Usage](#usage) to enable it.
@@ -115,7 +108,7 @@ Use the update controls in DSH’s built-in plugin manager, or the CLI commands 
 
 ```sh
 dsh plugin --profile web remove dsh-unrestricted
-dsh plugin --profile web add github:yexi-by/dsh-unrestricted#v0.2.10
+dsh plugin --profile web add github:yexi-by/dsh-unrestricted#v0.2.14
 ```
 
 Restart `dsh web` or DSH Desktop.
@@ -145,6 +138,7 @@ Make sure both switches are turned on after installation:
 
 The settings card also provides:
 
+- **Strip Host Brand Identity**: An independent option that removes `DeepSeek Harness` / `DSH` identity sections and Web GUI checkout context from assembled prompts, preventing HTTP `429` client-fingerprinting blocks on third-party routes (applicable to Google Antigravity reverse proxies, Google AI Studio PG channels, etc.).
 - **Mode Coverage & Prompt Preview**: Shows active status for Standard, PTC, Cordis, and Minimal modes, with expandable full-prompt preview and one-click copy.
 
 ---

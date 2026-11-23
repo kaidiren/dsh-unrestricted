@@ -92,19 +92,12 @@ DSH 发起请求时会先组装全局系统提示词（System Prompt）。在普
 
 ## 安装与更新
 
-使用 Desktop `0.2.1-rc.5` 或官方发布 tag `dsh-v0.2.2-rc.3` 时，请在对应 profile 的 `cordis.patch.yml` 给 `connection` 行补充以下依赖，已有配置保留在同一行。
-
-```yaml
-- id: connection
-  inject: [webStartup, webServer]
-```
-
 ```sh
 # Web 端安装指定版本
-dsh plugin --profile web add github:yexi-by/dsh-unrestricted#v0.2.10
+dsh plugin --profile web add github:yexi-by/dsh-unrestricted#v0.2.14
 
 # 桌面端安装指定版本（使用桌面端内置 CLI）
-& "$env:LOCALAPPDATA\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd" plugin --profile desktop add github:yexi-by/dsh-unrestricted#v0.2.10
+& "$env:LOCALAPPDATA\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd" plugin --profile desktop add github:yexi-by/dsh-unrestricted#v0.2.14
 ```
 
 安装后重启 `dsh web` 或 DSH 桌面端，按下方[使用说明](#使用说明)启用。
@@ -115,7 +108,7 @@ dsh plugin --profile web add github:yexi-by/dsh-unrestricted#v0.2.10
 
 ```sh
 dsh plugin --profile web remove dsh-unrestricted
-dsh plugin --profile web add github:yexi-by/dsh-unrestricted#v0.2.10
+dsh plugin --profile web add github:yexi-by/dsh-unrestricted#v0.2.14
 ```
 
 更新后重启 `dsh web` 或 DSH 桌面端。
@@ -145,6 +138,7 @@ dsh plugin --profile web add file:D:/work/dsh/plugin/unrestricted
 
 设置卡片中同时提供：
 
+- **隐藏宿主品牌标识**：独立于破限主开关的去指纹选项，开启后自动移除系统提示词与运行时上下文中的 `DeepSeek Harness` / `DSH` 身份段落及开发界面路径，避免第三方路由（适用于 Google Antigravity 反重力反代、Google AI Studio PG 渠道等）因客户端特征检测而返回 `429` 拦截。
 - **模式覆盖与提示词预览**：显示 Standard、PTC、Cordis、Minimal 四种模式的生效状态，支持展开查看或一键复制各模式最终生成的完整系统提示词。
 
 ---
