@@ -1,6 +1,6 @@
 {
   "name": "dsh-unrestricted",
-  "version": "0.2.15",
+  "version": "0.2.16",
   "engines": {
     "dsh": ">=0.2.0-rc.2 <0.2.4-0"
   },
@@ -24,7 +24,6 @@
   "files": [
     "src",
     "lib",
-    "docs",
     "cordis.patch.yml",
     "README.md",
     "README.en.md",

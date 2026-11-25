@@ -40,7 +40,7 @@ import { registerRpcRoutes } from './rpc.js'
 export const name = 'dsh-unrestricted'
 
 /** Current plugin package version. */
-export const PLUGIN_VERSION = '0.2.15'
+export const PLUGIN_VERSION = '0.2.16'
 
 /** Services required by this plugin (all base-backed profiles provide these). */
 export const inject = ['settings', 'systemPrompt', 'loader']
@@ -73,6 +73,8 @@ export function apply(ctx, config) {
 
   const initialConfig = config.get()
   const state = {
+    /** Cleared on plugin disposal so late async shadow probes cannot write. */
+    active: true,
     stripHostIdentity: Boolean(initialConfig.stripHostIdentity),
     extraPresets: new Set(initialConfig.extraPresets ?? []),
     /** presetId -> issue codes observed on live assemblies. */
@@ -81,6 +83,10 @@ export function apply(ctx, config) {
     shadows: new Map(),
     /** Minimal agents whose persona was already registered at agent scope by caller. */
     customMinimal: new WeakSet(),
+    /** Minimal agents currently being probed for complete-section ownership. */
+    probingMinimal: new WeakSet(),
+    /** Agents already disposed, guarding async shadow probes against late writes. */
+    disposed: new WeakSet(),
     /** Precomputed fused minimal prompt. */
     fusedMinimal: fusedMinimalPrompt(),
   }
@@ -175,20 +181,27 @@ export function apply(ctx, config) {
   }
 
   /**
-   * Synchronize a minimal agent's complete persona shadow with its current
-   * preset and toggle state. If the agent is no longer on `minimal`, any stale
-   * shadow from an earlier blank-session preset selection is disposed.
+   * Determine whether a post-assembly section list belongs to a stock
+   * complete-persona minimal agent rather than a custom-persona child override.
+   * On DSH >= 0.2.3, `AssembledSection` exposes `order` and `complete`; on
+   * DSH <= 0.2.2, a complete assembly restores a single `deployment:persona-prefix`
+   * section without `order`.
    */
-  function syncMinimalShadow(agent) {
-    if (!enabledFor(agent)) {
-      unshadowMinimal(agent)
-      return
-    }
-    const presetId = resolveAgentPreset(agent)
-    if (presetId !== 'minimal') {
-      unshadowMinimal(agent)
-      return
-    }
+  function isCompleteMinimalAssembly(sections) {
+    const persona = sections.find(section => section.name === 'deployment:persona-prefix')
+    if (persona === undefined) return false
+    if (typeof persona.order === 'number') return persona.complete === true
+    return sections.length === 1
+  }
+
+  /**
+   * Register the fused complete persona shadow directly on a stock minimal
+   * agent. Still handles the duplicate-section error thrown by DSH <= 0.2.2 if
+   * a caller registered a persona in the same scope before probing completed.
+   */
+  function installMinimalShadow(agent) {
+    if (!state.active || !enabledFor(agent) || state.disposed.has(agent)) return
+    if (resolveAgentPreset(agent) !== 'minimal') return
     if (state.shadows.has(agent) || state.customMinimal.has(agent)) return
     let dispose
     try {
@@ -211,6 +224,39 @@ export function apply(ctx, config) {
       return
     }
     state.shadows.set(agent, dispose)
+  }
+
+  /**
+   * Synchronize a minimal agent's complete persona shadow with its current
+   * preset and toggle state. Probes the scope read-only (no `agent`/`session`)
+   * before installing a shadow so DSH >= 0.2.3's latest-registration-wins rule
+   * never overwrites a child subagent's custom non-complete persona.
+   */
+  function syncMinimalShadow(agent) {
+    if (!state.active || !enabledFor(agent) || state.disposed.has(agent)) {
+      unshadowMinimal(agent)
+      return
+    }
+    const presetId = resolveAgentPreset(agent)
+    if (presetId !== 'minimal') {
+      unshadowMinimal(agent)
+      return
+    }
+    if (state.shadows.has(agent) || state.customMinimal.has(agent) || state.probingMinimal.has(agent)) return
+    state.probingMinimal.add(agent)
+    void ctx.systemPrompt.assemble({ scope: agent }).then((assembly) => {
+      if (!state.active || !enabledFor(agent) || state.disposed.has(agent)) return
+      if (resolveAgentPreset(agent) !== 'minimal') return
+      if (isCompleteMinimalAssembly(assembly.sections)) {
+        installMinimalShadow(agent)
+      } else {
+        state.customMinimal.add(agent)
+      }
+    }).catch(() => {
+      // Agent or scope disposed while probing; ignore transient error.
+    }).finally(() => {
+      state.probingMinimal.delete(agent)
+    })
   }
 
   /** Synchronize minimal persona shadows across all live agents. */
@@ -387,7 +433,15 @@ export function apply(ctx, config) {
 
     if (presetId === 'minimal') {
       if (armed) {
-        if (!state.shadows.has(agent)) syncMinimalShadow(agent)
+        if (!state.shadows.has(agent) && !state.customMinimal.has(agent)) {
+          const persona = current.sections.find(section => section.name === 'deployment:persona-prefix')
+          if (persona !== undefined && typeof persona.order === 'number') {
+            if (persona.complete === true) installMinimalShadow(agent)
+            else state.customMinimal.add(agent)
+          } else {
+            installMinimalShadow(agent)
+          }
+        }
         if (state.customMinimal.has(agent)) {
           const fused = fuseSections(current.sections, 'minimal', { isSubagent: true })
           if (fused.issues !== undefined) {
@@ -441,6 +495,7 @@ export function apply(ctx, config) {
   })
 
   ctx.on('agent/disposed', ({ agent }) => {
+    state.disposed.add(agent)
     state.customMinimal.delete(agent)
     unshadowMinimal(agent)
   })
@@ -458,6 +513,7 @@ export function apply(ctx, config) {
     })
     syncAllAgents()
     return () => {
+      state.active = false
       unwatch()
       clearShadows()
     }
