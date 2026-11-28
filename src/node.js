@@ -26,11 +26,14 @@ import z from '@deepseek-ai/schemastery'
 import { renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import {
   ANCHORS,
+  EXECUTION_MODE_BLOCK,
   PRESETS,
   PRESET_RULES,
   fuseSections,
   fusedMinimalPrompt,
+  normalizePromptText,
   renderPreview,
+  resolveExecutionModeBlock,
   sessionEnabled,
   stripHostIdentityFromAssembly,
 } from './rules.js'
@@ -40,7 +43,7 @@ import { registerRpcRoutes } from './rpc.js'
 export const name = 'dsh-unrestricted'
 
 /** Current plugin package version. */
-export const PLUGIN_VERSION = '0.2.16'
+export const PLUGIN_VERSION = '0.2.17'
 
 /** Services required by this plugin (all base-backed profiles provide these). */
 export const inject = ['settings', 'systemPrompt', 'loader']
@@ -50,9 +53,11 @@ export const Config = z.object({
   sessions: z.dict(z.boolean()).default({}),
   /** Hide host branding and local dev-surface metadata from the assembled prompt. */
   stripHostIdentity: z.boolean().default(false),
+  /** Optional user-edited execution-mode block; blank means the built-in default. */
+  customPrompt: z.string().default(''),
   /** Extra preset ids allowed to fuse with the default rule shape. */
   extraPresets: z.array(z.string()).default([]),
-}).default({ sessions: {}, stripHostIdentity: false, extraPresets: [] }).volatile()
+}).default({ sessions: {}, stripHostIdentity: false, customPrompt: '', extraPresets: [] }).volatile()
 
 /** Human-readable error text for diagnostics and RPC error branches. */
 function messageOf(error) {
@@ -72,10 +77,14 @@ export function apply(ctx, config) {
   ctx.effect(() => ctx.settings.configure({ auto: false }, ctx.fiber))
 
   const initialConfig = config.get()
+  const initialCustomPrompt = normalizePromptText(initialConfig.customPrompt)
+  const initialPromptBlock = resolveExecutionModeBlock(initialCustomPrompt)
   const state = {
     /** Cleared on plugin disposal so late async shadow probes cannot write. */
     active: true,
     stripHostIdentity: Boolean(initialConfig.stripHostIdentity),
+    customPrompt: initialCustomPrompt,
+    promptBlock: initialPromptBlock,
     extraPresets: new Set(initialConfig.extraPresets ?? []),
     /** presetId -> issue codes observed on live assemblies. */
     runtime: new Map(),
@@ -87,8 +96,12 @@ export function apply(ctx, config) {
     probingMinimal: new WeakSet(),
     /** Agents already disposed, guarding async shadow probes against late writes. */
     disposed: new WeakSet(),
-    /** Precomputed fused minimal prompt. */
-    fusedMinimal: fusedMinimalPrompt(),
+    /** Precomputed fused minimal prompt for the active prompt block. */
+    fusedMinimal: fusedMinimalPrompt('', initialPromptBlock),
+  }
+
+  function isCustomPromptActive() {
+    return state.customPrompt.trim() !== '' && state.promptBlock !== EXECUTION_MODE_BLOCK
   }
 
   function isSupportedPreset(presetId) {
@@ -209,12 +222,13 @@ export function apply(ctx, config) {
         name: 'deployment:persona-prefix',
         order: 0,
         complete: true,
+        interpolate: false,
         text: (context) => {
           const hasStructured = context?.agent?.ctx?.tools
             ?.schemas?.(context.agent)
             ?.some(tool => tool.name === 'structured_output') === true
           return hasStructured
-            ? fusedMinimalPrompt(ANCHORS.structuredOutputFull)
+            ? fusedMinimalPrompt(ANCHORS.structuredOutputFull, state.promptBlock)
             : state.fusedMinimal
         },
       })
@@ -299,6 +313,9 @@ export function apply(ctx, config) {
     return {
       sessions: armed,
       stripHostIdentity: state.stripHostIdentity,
+      customPrompt: state.customPrompt,
+      defaultPrompt: EXECUTION_MODE_BLOCK,
+      isCustomPrompt: isCustomPromptActive(),
       version: PLUGIN_VERSION,
       modes,
     }
@@ -353,11 +370,17 @@ export function apply(ctx, config) {
       if (presetId === 'minimal') {
         previewAssembly = {
           ...assembly,
-          sections: [{ name: 'deployment:persona-prefix', text: fusedMinimalPrompt() }],
+          sections: [{
+            name: 'deployment:persona-prefix',
+            order: 0,
+            interpolate: false,
+            text: fusedMinimalPrompt('', state.promptBlock),
+          }],
         }
       } else {
         const fused = fuseSections(assembly.sections, presetId, {
           allowDynamicPreset: state.extraPresets.has(presetId),
+          customPrompt: state.promptBlock,
         })
         if (fused.issues !== undefined) {
           return {
@@ -443,7 +466,10 @@ export function apply(ctx, config) {
           }
         }
         if (state.customMinimal.has(agent)) {
-          const fused = fuseSections(current.sections, 'minimal', { isSubagent: true })
+          const fused = fuseSections(current.sections, 'minimal', {
+            isSubagent: true,
+            customPrompt: state.promptBlock,
+          })
           if (fused.issues !== undefined) {
             state.runtime.set('minimal', fused.issues)
             return state.stripHostIdentity ? stripHostIdentityFromAssembly(current) : current
@@ -466,6 +492,7 @@ export function apply(ctx, config) {
       const fused = fuseSections(current.sections, presetId, {
         isSubagent,
         allowDynamicPreset: state.extraPresets.has(presetId),
+        customPrompt: state.promptBlock,
       })
       if (fused.issues !== undefined) {
         state.runtime.set(presetId, fused.issues)
@@ -506,7 +533,11 @@ export function apply(ctx, config) {
   ctx.effect(() => {
     const unwatch = ctx.on('loader/volatile-update', () => {
       const nextConfig = config.get()
+      const nextCustomPrompt = normalizePromptText(nextConfig.customPrompt)
       state.stripHostIdentity = Boolean(nextConfig.stripHostIdentity)
+      state.customPrompt = nextCustomPrompt
+      state.promptBlock = resolveExecutionModeBlock(nextCustomPrompt)
+      state.fusedMinimal = fusedMinimalPrompt('', state.promptBlock)
       state.extraPresets = new Set(nextConfig.extraPresets ?? [])
       state.runtime.clear()
       syncAllAgents()
